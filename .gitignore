@@ -33,3 +33,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+giki-wallet/
+commit_chunks.ps1
