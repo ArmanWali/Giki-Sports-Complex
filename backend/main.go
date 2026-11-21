@@ -1,0 +1,857 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+
+	"giki-sports-backend/internal/authentication"
+	"giki-sports-backend/internal/config"
+	"giki-sports-backend/internal/content"
+	"giki-sports-backend/internal/database"
+	"giki-sports-backend/internal/facility"
+	"giki-sports-backend/internal/membership"
+	"giki-sports-backend/internal/padel"
+	"giki-sports-backend/internal/session"
+	"giki-sports-backend/internal/user"
+	"giki-sports-backend/internal/wallet"
+)
+
+type Facility struct {
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Category             string   `json:"category"` // Racquet, Indoor, Outdoor, Fitness, Aquatics
+	Description          string   `json:"description"`
+	Location             string   `json:"location"`
+	MaxPlayers           int      `json:"maxPlayers"`
+	StudentTimings       string   `json:"studentTimings"`
+	FacultyTimings       string   `json:"facultyTimings"`
+	Slots                []string `json:"slots"`
+	Rules                []string `json:"rules"`
+	EquipmentAvailable   []string `json:"equipmentAvailable"`
+	Image                string   `json:"image"`
+	Badge                string   `json:"badge"`
+	IsMembershipRequired bool     `json:"isMembershipRequired"`
+}
+
+type Booking struct {
+	ID               string    `json:"id"`
+	FacilityID       string    `json:"facilityId"`
+	FacilityName     string    `json:"facilityName"`
+	Date             string    `json:"date"` // YYYY-MM-DD
+	TimeSlot         string    `json:"timeSlot"`
+	BookerType       string    `json:"bookerType"` // student or faculty
+	BookerName       string    `json:"bookerName"`
+	BookerID         string    `json:"bookerId"` // e.g. 2023-CS-104 or FAC-EE-42
+	BookerEmail      string    `json:"bookerEmail"`
+	BookerPhone      string    `json:"bookerPhone"`
+	EquipmentRentals []string  `json:"equipmentRentals"`
+	Status           string    `json:"status"` // confirmed, cancelled, completed
+	CheckInCode      string    `json:"checkInCode"`
+	CreatedAt        time.Time `json:"createdAt"`
+}
+
+type Achievement struct {
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Sport        string    `json:"sport"`
+	Date         string    `json:"date"`
+	Category     string    `json:"category"` // National Gold, Intervarsity Champion, Runner Up, Special Mention
+	Description  string    `json:"description"`
+	TeamMembers  string    `json:"teamMembers"`
+	Image        string    `json:"image"`
+	DirectorNote string    `json:"directorNote"`
+	Featured     bool      `json:"featured"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type Announcement struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	Date      string    `json:"date"`
+	Priority  string    `json:"priority"` // urgent, info, maintenance
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type Membership struct {
+	ID            string    `json:"id"`
+	ApplicantName string    `json:"applicantName"`
+	ApplicantID   string    `json:"applicantId"`
+	ApplicantType string    `json:"applicantType"`
+	Plan          string    `json:"plan"`
+	Status        string    `json:"status"` // active, pending, approved
+	ValidUntil    string    `json:"validUntil"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+type StoreData struct {
+	Facilities    []Facility     `json:"facilities"`
+	Bookings      []Booking      `json:"bookings"`
+	Achievements  []Achievement  `json:"achievements"`
+	Announcements []Announcement `json:"announcements"`
+	Memberships   []Membership   `json:"memberships"`
+}
+
+type Store struct {
+	mu       sync.RWMutex
+	filePath string
+	Data     StoreData
+}
+
+func NewStore(filePath string) *Store {
+	s := &Store{
+		filePath: filePath,
+	}
+	s.load()
+	return s
+}
+
+func (s *Store) load() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dir := filepath.Dir(s.filePath)
+	_ = os.MkdirAll(dir, 0755)
+
+	if data, err := os.ReadFile(s.filePath); err == nil {
+		if err := json.Unmarshal(data, &s.Data); err == nil && len(s.Data.Facilities) > 0 {
+			log.Println("Loaded existing database from disk")
+			return
+		}
+	}
+
+	// Seed with authentic GIKI Sports Complex data
+	log.Println("Seeding initial GIKI Sports Complex data...")
+	s.seedDefaultData()
+	s.saveUnsafe()
+}
+
+func (s *Store) saveUnsafe() error {
+	data, err := json.MarshalIndent(s.Data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.filePath, data, 0644)
+}
+
+func (s *Store) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveUnsafe()
+}
+
+func (s *Store) seedDefaultData() {
+	slots := []string{
+		"06:00 - 07:00",
+		"07:00 - 08:00",
+		"08:00 - 09:00",
+		"09:00 - 10:00",
+		"10:00 - 11:00",
+		"15:00 - 16:00",
+		"16:00 - 17:00",
+		"17:00 - 18:00",
+		"18:00 - 19:00",
+		"19:00 - 20:00",
+		"20:00 - 21:00",
+		"21:00 - 22:00",
+		"22:00 - 23:00",
+	}
+
+	s.Data.Facilities = []Facility{
+		{
+			ID:                   "padel-court-1",
+			Name:                 "Padel Court 1",
+			Category:             "Racquet",
+			Description:          "State-of-the-art panoramic tempered glass court with high-grade synthetic turf and anti-glare LED tournament lighting.",
+			Location:             "Sports Complex, Outdoor Courts North",
+			MaxPlayers:           4,
+			StudentTimings:       "06:00 AM - 11:00 AM & 04:00 PM - 11:00 PM",
+			FacultyTimings:       "05:00 PM - 07:00 PM (Reserved Priority Slot)",
+			Slots:                slots,
+			Rules:                []string{"Non-marking turf shoes mandatory", "Max 4 players per match", "Racquet safety leash required"},
+			EquipmentAvailable:   []string{"Babolat Padel Racket", "Pro Padel Balls (Can of 3)", "Wrist Wraps"},
+			Image:                "https://images.unsplash.com/photo-1554068865-24cecd4e34b8?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "Most Popular",
+			IsMembershipRequired: false,
+		},
+		{
+			ID:                   "padel-court-2",
+			Name:                 "Padel Court 2",
+			Category:             "Racquet",
+			Description:          "Tournament standard court configured for doubles & singles match play with spectator seating deck.",
+			Location:             "Sports Complex, Outdoor Courts North",
+			MaxPlayers:           4,
+			StudentTimings:       "06:00 AM - 11:00 AM & 04:00 PM - 11:00 PM",
+			FacultyTimings:       "06:00 PM - 08:00 PM (Reserved Priority Slot)",
+			Slots:                slots,
+			Rules:                []string{"No outdoor spiked footwear", "Strict 60-min slot adherence"},
+			EquipmentAvailable:   []string{"Wilson Carbon Racket", "Dunlop Pro Padel Balls"},
+			Image:                "https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "Floodlit",
+			IsMembershipRequired: false,
+		},
+		{
+			ID:                   "badminton-indoor",
+			Name:                 "Badminton",
+			Category:             "Indoor",
+			Description:          "Four BWF-certified teakwood sprung courts with shock absorption, climate cooling, and spectator gallery.",
+			Location:             "Indoor Sports Hall, Level 1",
+			MaxPlayers:           4,
+			StudentTimings:       "06:00 AM - 12:00 PM & 03:00 PM - 11:00 PM",
+			FacultyTimings:       "04:00 PM - 06:00 PM (Court 1 & 2 Dedicated)",
+			Slots:                slots,
+			Rules:                []string{"Strict non-marking indoor court shoes only", "No food or sugary drinks on wood surface"},
+			EquipmentAvailable:   []string{"Yonex Nanoray Racket", "Aerosensa Feather Shuttles", "Nylon Shuttles"},
+			Image:                "https://images.unsplash.com/photo-1626224583764-f87db24ac4ea?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "BWF Certified",
+			IsMembershipRequired: false,
+		},
+		{
+			ID:                   "squash-courts",
+			Name:                 "Squash",
+			Category:             "Racquet",
+			Description:          "Three glass-back competition squash courts with Junckers Beech flooring and electronic scoring monitors.",
+			Location:             "Sports Complex, West Wing Ground Floor",
+			MaxPlayers:           2,
+			StudentTimings:       "06:00 AM - 11:00 AM & 04:00 PM - 10:30 PM",
+			FacultyTimings:       "05:00 PM - 07:00 PM (Court 3 Reserved)",
+			Slots:                slots,
+			Rules:                []string{"Goggles/Eye protection recommended", "White/Gum sole shoes only"},
+			EquipmentAvailable:   []string{"Head Squash Rackets", "Dunlop Pro Double Yellow Dot Balls"},
+			Image:                "https://images.unsplash.com/photo-1574629810360-7efbbe195018?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "Glass Back",
+			IsMembershipRequired: false,
+		},
+		{
+			ID:                   "tennis-synthetic",
+			Name:                 "Tennis",
+			Category:             "Outdoor",
+			Description:          "Two US Open-grade acrylic cushioned hard courts with high-mast LED night lighting.",
+			Location:             "Campus South Perimeter Sports Ground",
+			MaxPlayers:           4,
+			StudentTimings:       "06:00 AM - 10:00 AM & 04:30 PM - 10:30 PM",
+			FacultyTimings:       "05:00 PM - 07:00 PM",
+			Slots:                slots,
+			Rules:                []string{"Tennis shoes with smooth soles required", "Turn off floodlights if last to leave"},
+			EquipmentAvailable:   []string{"Wilson Clash Rackets", "Penn Championship Tennis Balls"},
+			Image:                "https://images.unsplash.com/photo-1595435934249-5df7ed86e1c0?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "Tournament Grade",
+			IsMembershipRequired: false,
+		},
+		{
+			ID:                   "futsal-court",
+			Name:                 "Futsal",
+			Category:             "Outdoor",
+			Description:          "FIFA Quality certified artificial turf pitch with side rebound netting and digital score display.",
+			Location:             "Sports Complex Central Courtyard",
+			MaxPlayers:           12,
+			StudentTimings:       "05:00 PM - 11:30 PM",
+			FacultyTimings:       "08:00 PM - 09:30 PM (Wednesdays & Fridays)",
+			Slots:                slots,
+			Rules:                []string{"Turf shoes only (strictly no metal studs)", "Team captain must present student ID"},
+			EquipmentAvailable:   []string{"Match Futsal Balls (Low Bounce)", "Numbered Bibs (Red/Neon)", "Goalkeeper Gloves"},
+			Image:                "https://images.unsplash.com/photo-1529900245534-47fbf024a16d?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "Floodlit",
+			IsMembershipRequired: false,
+		},
+		{
+			ID:                   "table-tennis",
+			Name:                 "Table Tennis",
+			Category:             "Indoor",
+			Description:          "Equipped with 6 ITTF approved Butterfly Centrefold 25 tournament tables with tournament lighting.",
+			Location:             "Indoor Complex, Mezzanine Hall",
+			MaxPlayers:           4,
+			StudentTimings:       "08:00 AM - 11:00 PM",
+			FacultyTimings:       "All-day access (Table 1 dedicated)",
+			Slots:                slots,
+			Rules:                []string{"Return rackets and 3-star balls to rack after use"},
+			EquipmentAvailable:   []string{"Stiga Professional Paddles", "Nittaku 3-Star Poly Balls"},
+			Image:                "https://images.unsplash.com/photo-1534158914592-062992fbe900?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "ITTF Standard",
+			IsMembershipRequired: false,
+		},
+		{
+			ID:                   "gymnasium",
+			Name:                 "Gymnasium",
+			Category:             "Fitness",
+			Description:          "Comprehensive weightlifting zone, Olympic squat racks, cardiovascular treadmills, ellipticals, and functional trainer rigs.",
+			Location:             "Sports Complex, Ground Floor East",
+			MaxPlayers:           35,
+			StudentTimings:       "06:30 AM - 10:30 AM (Male/Female Slots) & 04:00 PM - 10:30 PM",
+			FacultyTimings:       "05:30 PM - 07:30 PM (Dedicated Faculty Area)",
+			Slots:                slots,
+			Rules:                []string{"Clean workout towel mandatory", "Re-rack all weights and dumbbells after use", "Indoor trainers required"},
+			EquipmentAvailable:   []string{"Lifting Belts", "Resistance Bands", "Foam Rollers"},
+			Image:                "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "Strength & Cardio",
+			IsMembershipRequired: true,
+		},
+		{
+			ID:                   "swimming-pool",
+			Name:                 "Swimming Pool",
+			Category:             "Aquatics",
+			Description:          "25-meter 6-lane temperature-controlled pool with ozone filtration and certified lifeguards on duty.",
+			Location:             "Aquatic Center, Sports Complex",
+			MaxPlayers:           25,
+			StudentTimings:       "07:00 AM - 10:00 AM & 04:00 PM - 08:30 PM (Designated male/female sessions)",
+			FacultyTimings:       "05:00 PM - 06:30 PM",
+			Slots:                slots,
+			Rules:                []string{"Shower before entering pool", "Silicone swim cap mandatory", "No diving in shallow end"},
+			EquipmentAvailable:   []string{"Kickboards", "Pull Buoys", "Swim Goggles"},
+			Image:                "https://images.unsplash.com/photo-1530549387789-4c1017266635?auto=format&fit=crop&w=1200&q=80",
+			Badge:                "Heated 25m",
+			IsMembershipRequired: true,
+		},
+	}
+
+	today := time.Now().Format("2006-01-02")
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+
+	s.Data.Bookings = []Booking{
+		{
+			ID:               "BK-10492",
+			FacilityID:       "padel-court-1",
+			FacilityName:     "Padel Court 1",
+			Date:             today,
+			TimeSlot:         "18:00 - 19:00",
+			BookerType:       "student",
+			BookerName:       "Hamza Tariq",
+			BookerID:         "2022-CS-089",
+			BookerEmail:      "u2022089@giki.edu.pk",
+			BookerPhone:      "+92 301 5551234",
+			EquipmentRentals: []string{"Babolat Padel Racket", "Pro Padel Balls (Can of 3)"},
+			Status:           "confirmed",
+			CheckInCode:      "4821",
+			CreatedAt:        time.Now().Add(-2 * time.Hour),
+		},
+		{
+			ID:               "BK-10493",
+			FacilityID:       "padel-court-1",
+			FacilityName:     "Padel Court 1",
+			Date:             today,
+			TimeSlot:         "19:00 - 20:00",
+			BookerType:       "faculty",
+			BookerName:       "Dr. Zia Ur Rehman",
+			BookerID:         "FAC-FES-014",
+			BookerEmail:      "zia.rehman@giki.edu.pk",
+			BookerPhone:      "+92 333 4448899",
+			EquipmentRentals: []string{},
+			Status:           "confirmed",
+			CheckInCode:      "9183",
+			CreatedAt:        time.Now().Add(-5 * time.Hour),
+		},
+		{
+			ID:               "BK-10494",
+			FacilityID:       "badminton-indoor",
+			FacilityName:     "Badminton",
+			Date:             today,
+			TimeSlot:         "17:00 - 18:00",
+			BookerType:       "student",
+			BookerName:       "Ayesha Farooq",
+			BookerID:         "2023-EE-045",
+			BookerEmail:      "u2023045@giki.edu.pk",
+			BookerPhone:      "+92 312 9988776",
+			EquipmentRentals: []string{"Aerosensa Feather Shuttles"},
+			Status:           "confirmed",
+			CheckInCode:      "2049",
+			CreatedAt:        time.Now().Add(-8 * time.Hour),
+		},
+		{
+			ID:               "BK-10495",
+			FacilityID:       "squash-courts",
+			FacilityName:     "Squash",
+			Date:             tomorrow,
+			TimeSlot:         "18:00 - 19:00",
+			BookerType:       "student",
+			BookerName:       "Bilal Saeed",
+			BookerID:         "2021-ME-112",
+			BookerEmail:      "u2021112@giki.edu.pk",
+			BookerPhone:      "+92 345 7766554",
+			EquipmentRentals: []string{"Head Squash Rackets"},
+			Status:           "confirmed",
+			CheckInCode:      "7731",
+			CreatedAt:        time.Now().Add(-1 * time.Hour),
+		},
+	}
+
+	s.Data.Achievements = []Achievement{
+		{
+			ID:           "ach-001",
+			Title:        "GIKI Padel Titans Crowned Champions at HEC Intervarsity Tournament 2026",
+			Sport:        "Padel Tennis",
+			Date:         "September 2026",
+			Category:     "National Gold",
+			Description:  "The GIKI Varsity Padel squad displayed masterclass tactical precision and endurance, overcoming IBA Karachi in a thrilling 3-set finale (6-4, 4-6, 7-5) to hoist the national trophy.",
+			TeamMembers:  "Hamza Tariq (Captain), Daniyal Munir, Saad Ali, Rayyan Shah",
+			Image:        "https://images.unsplash.com/photo-1554068865-24cecd4e34b8?auto=format&fit=crop&w=1200&q=80",
+			DirectorNote: "Historic victory for GIKI in the rapidly growing padel scene! Our investments in the glass courts are already generating national championships.",
+			Featured:     true,
+			CreatedAt:    time.Now().AddDate(0, 0, -10),
+		},
+		{
+			ID:           "ach-002",
+			Title:        "All-Pakistan Inter-University Badminton Championship: Silver Medal for GIKI",
+			Sport:        "Badminton",
+			Date:         "August 2026",
+			Category:     "Intervarsity Champion",
+			Description:  "GIKI's men doubles pair clinched the Silver Medal after an intense 55-minute clash at the Pakistan Sports Complex Islamabad, defeating LUMS and NUST in preceding rounds.",
+			TeamMembers:  "Shahzaib Khan & Waleed Ahmed",
+			Image:        "https://images.unsplash.com/photo-1626224583764-f87db24ac4ea?auto=format&fit=crop&w=1200&q=80",
+			DirectorNote: "Superb resilience and court coverage. Both student-athletes balanced rigorous engineering exams while training under floodlights.",
+			Featured:     true,
+			CreatedAt:    time.Now().AddDate(0, -1, 0),
+		},
+		{
+			ID:           "ach-003",
+			Title:        "KPK Squash Open: GIKI Squash Ace Reaches Semifinals",
+			Sport:        "Squash",
+			Date:         "July 2026",
+			Category:     "Special Mention",
+			Description:  "Representing GIKI Sports Complex, sophomore Hassan Raza defeated 2 seeded provincial players before reaching the semifinal stage of the prestigious KPK Open.",
+			TeamMembers:  "Hassan Raza (Mechanical Engg.)",
+			Image:        "https://images.unsplash.com/photo-1574629810360-7efbbe195018?auto=format&fit=crop&w=1200&q=80",
+			DirectorNote: "Hassan's dedication sets a benchmark for all incoming freshers at the sports orientation.",
+			Featured:     false,
+			CreatedAt:    time.Now().AddDate(0, -2, 0),
+		},
+		{
+			ID:           "ach-004",
+			Title:        "GIKI Futsal League 2026: Mechanical Hawks Hoist President's Cup",
+			Sport:        "Futsal",
+			Date:         "May 2026",
+			Category:     "Campus Championship",
+			Description:  "Over 24 departmental teams battled through 3 weeks under the lights. Mechanical Engineering emerged victorious in sudden-death penalty shootout against Computer Science.",
+			TeamMembers:  "Hawks Squad (Capt: Zeeshan Malik, Golden Boot: Zain Ul Abideen)",
+			Image:        "https://images.unsplash.com/photo-1529900245534-47fbf024a16d?auto=format&fit=crop&w=1200&q=80",
+			DirectorNote: "Unprecedented campus engagement with over 800 students attending the night final.",
+			Featured:     true,
+			CreatedAt:    time.Now().AddDate(0, -4, 0),
+		},
+	}
+
+	s.Data.Announcements = []Announcement{
+		{
+			ID:        "ann-01",
+			Title:     "New Glass Padel Court #2 Floodlights Upgraded to 800 Lux LED",
+			Content:   "To support evening tournament play and student night sessions, court #2 lighting has been upgraded. Extra night slots are now bookable up to 11:00 PM.",
+			Date:      today,
+			Priority:  "info",
+			CreatedAt: time.Now().Add(-12 * time.Hour),
+		},
+		{
+			ID:        "ann-02",
+			Title:     "GIKI Annual Sports Gala 2026 Registration Opens Next Monday",
+			Content:   "Trial registrations for Racquet Sports, Futsal, Table Tennis, and Swimming will commence through this portal. Keep your GIKI ID validated.",
+			Date:      today,
+			Priority:  "urgent",
+			CreatedAt: time.Now().Add(-24 * time.Hour),
+		},
+		{
+			ID:        "ann-03",
+			Title:     "Squash Court #2 Floor Buffing & Maintenance Schedule",
+			Content:   "Squash Court 2 will remain offline on Sunday morning (08:00 - 14:00) for standard polyurethane varnish refinishing. Court 1 & 3 remain operational.",
+			Date:      today,
+			Priority:  "maintenance",
+			CreatedAt: time.Now().Add(-48 * time.Hour),
+		},
+	}
+
+	s.Data.Memberships = []Membership{
+		{
+			ID:            "MBR-8801",
+			ApplicantName: "Saad Farooq",
+			ApplicantID:   "2023-CS-302",
+			ApplicantType: "student",
+			Plan:          "Padel Court Priority Pass (Semester)",
+			Status:        "active",
+			ValidUntil:    "2026-12-31",
+			CreatedAt:     time.Now().AddDate(0, -1, 0),
+		},
+		{
+			ID:            "MBR-8802",
+			ApplicantName: "Dr. Tariq Jadoon",
+			ApplicantID:   "FAC-FCSE-003",
+			ApplicantType: "faculty",
+			Plan:          "Faculty All-Sports VIP Card",
+			Status:        "active",
+			ValidUntil:    "2027-06-30",
+			CreatedAt:     time.Now().AddDate(0, -2, 0),
+		},
+	}
+}
+
+func main() {
+	// Step 1: Load and validate application and database configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("[FATAL] Configuration initialization failed: %v", err)
+	}
+
+	// Step 2: Initialize and verify PostgreSQL connection pool before accepting requests
+	log.Printf("Connecting to PostgreSQL at %s:%d (database: %s, user: %s, sslmode: %s)...",
+		cfg.DB.Host, cfg.DB.Port, cfg.DB.Name, cfg.DB.User, cfg.DB.SSLMode)
+	dbPool, err := database.NewPool(context.Background(), cfg.DB)
+	if err != nil {
+		log.Fatalf("[FATAL] Database connection failed: %v", err)
+	}
+	defer func() {
+		log.Println("Closing database connection pool...")
+		dbPool.Close()
+	}()
+	log.Printf("✓ PostgreSQL connection pool established successfully (max_conns: %d, min_conns: %d)",
+		cfg.DB.MaxConns, cfg.DB.MinConns)
+
+	// Step 3: Local JSON storage (Notice: business data endpoints still use JSON storage at this step)
+	storePath := filepath.Join(".", "data", "store.json")
+	store := NewStore(storePath)
+
+	app := fiber.New(fiber.Config{
+		AppName:      "GIKI Sports Complex API v1.0",
+		ServerHeader: "GoFiber/GIKI-Sports",
+	})
+
+	app.Use(logger.New(logger.Config{
+		Format: "[${time}] ${status} - ${latency} ${method} ${path}\n",
+	}))
+	app.Use(recover.New())
+
+	// CORS Configuration: Narrowly scoped to configured trusted origins with credentials enabled.
+	// Wildcards are strictly avoided to prevent credentialed cross-site leakage.
+	corsOrigins := strings.Join(cfg.Auth.TrustedOrigins, ", ")
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     corsOrigins,
+		AllowCredentials: true,
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Director-Key",
+		AllowMethods:     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+	}))
+
+	// Ensure uploads directory exists and mount static route for content media
+	_ = os.MkdirAll("./uploads", 0755)
+	app.Static("/uploads", "./uploads")
+
+	// Static, Health & Readiness
+	api := app.Group("/api")
+
+	// Liveness probe: returns application process health
+	api.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status":    "online",
+			"engine":    "Go Fiber v2 / fasthttp",
+			"time":      time.Now().Format(time.RFC3339),
+			"timestamp": time.Now().UnixMilli(),
+		})
+	})
+
+	// Readiness probe: verifies live PostgreSQL database connectivity
+	// Note: database readiness confirms pool ping; business schema migrations and business data persistence remain pending
+	api.Get("/ready", func(c *fiber.Ctx) error {
+		ctx, cancel := context.WithTimeout(c.Context(), 2*time.Second)
+		defer cancel()
+
+		if err := dbPool.Ping(ctx); err != nil {
+			log.Printf("[ERROR] Database readiness ping failed: %v", err)
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"status":  "unavailable",
+				"message": "database service unavailable",
+			})
+		}
+
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"status":   "ready",
+			"database": "connected",
+			"note":     "database connectivity verified; business schema migrations and data persistence remain pending",
+		})
+	})
+
+	// Step 6G: Authentication Service & Handlers (PostgreSQL persistent session integration)
+	// Constructed once during startup; dummy Argon2id hash is precomputed once, never per request.
+	userRepo := user.NewRepository(dbPool)
+	sessionRepo := session.NewRepository(dbPool)
+	authService, err := authentication.NewService(userRepo, sessionRepo)
+	if err != nil {
+		log.Fatalf("[FATAL] Authentication service initialization failed: %v", err)
+	}
+	authHandler := authentication.NewHandler(authService, cfg.Auth)
+	authHandler.RegisterRoutes(api)
+
+	// Facilities & Timings (PostgreSQL repository integration)
+	// Step 7D: Public read routes and protected schedule update route with trusted Origin check, session auth, and role check
+	facilityRepo := facility.NewRepository(dbPool)
+	facilityHandler := facility.NewHandler(facilityRepo, 5*time.Second)
+	facilityHandler.RegisterRoutes(api)
+	facilityHandler.RegisterScheduleUpdateRoute(api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+	facilityHandler.RegisterScheduleDeleteRoute(api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+	facilityHandler.RegisterScheduleCreateRoute(api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+	facilityHandler.RegisterFacilityCreateRoute(api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+	facilityHandler.RegisterFacilityUpdateRoute(api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+
+	// Step 10E, 10F & 10G: Announcements & Achievements (PostgreSQL content repository integration)
+	contentRepo := content.NewRepository(dbPool)
+	contentHandler := content.NewHandler(contentRepo, 5*time.Second)
+	contentHandler.RegisterPublicRoutes(api)
+	contentHandler.RegisterDraftRoutes(api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+
+	// Step 11E: Sports Digital Wallet (Owner-scoped balance & recent activity reads)
+	walletService := wallet.NewService(dbPool)
+	walletHandler := wallet.NewHandler(walletService, 5*time.Second)
+	walletHandler.RegisterRoutes(api, authHandler.RequireAuth())
+
+	// Step 12C, 12D, 12E & 12F: Padel Court Booking Engine, UnitOfWork & Background Cleaner
+	padelRepo := padel.NewRepository(dbPool)
+	padelUoW := padel.NewUnitOfWork(dbPool, walletService)
+	padelService := padel.NewService(padelRepo, walletService, padelUoW)
+	padelHandler := padel.NewHandler(padelService, 5*time.Second)
+	padelHandler.RegisterPublicRoutes(api)
+	padelHandler.RegisterAuthenticatedRoutes(
+		api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+	)
+	padelHandler.RegisterAdminRoutes(
+		api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+
+	// Step 12E: Start background cleaner worker to release expired holds (SE-423 §2 Table 1 No. 4)
+	padelCleaner := padel.NewHoldCleanerWorker(padelRepo, padel.CleanerConfig{
+		Interval:     30 * time.Second,
+		BatchTimeout: 5 * time.Second,
+	})
+	padelCleaner.Start()
+
+	// Phase 7 / Step 7A & 7B: 30-Day Gym Membership Management (FR-04, QR-04, QR-06, CR-06)
+	membershipRepo := membership.NewRepository(dbPool)
+	membershipService := membership.NewService(dbPool, membershipRepo, walletService, membership.SystemClock{})
+	membershipHandler := membership.NewHandler(membershipService, 5*time.Second)
+	membershipHandler.RegisterRoutes(
+		api,
+		authHandler.RequireTrustedOrigin(),
+		authHandler.RequireAuth(),
+		authentication.RequireAnyRole(user.RoleSportsDirector, user.RoleSuperAdmin),
+	)
+
+	// Bookings
+	api.Get("/bookings", func(c *fiber.Ctx) error {
+		date := c.Query("date")
+		facilityID := c.Query("facilityId")
+
+		store.mu.RLock()
+		defer store.mu.RUnlock()
+
+		var results []Booking
+		for _, b := range store.Data.Bookings {
+			if b.Status == "cancelled" {
+				continue
+			}
+			if date != "" && b.Date != date {
+				continue
+			}
+			if facilityID != "" && b.FacilityID != facilityID {
+				continue
+			}
+			results = append(results, b)
+		}
+		return c.JSON(results)
+	})
+
+	api.Post("/bookings", func(c *fiber.Ctx) error {
+		var req struct {
+			FacilityID       string   `json:"facilityId"`
+			Date             string   `json:"date"`
+			TimeSlot         string   `json:"timeSlot"`
+			BookerType       string   `json:"bookerType"`
+			BookerName       string   `json:"bookerName"`
+			BookerID         string   `json:"bookerId"`
+			BookerEmail      string   `json:"bookerEmail"`
+			BookerPhone      string   `json:"bookerPhone"`
+			EquipmentRentals []string `json:"equipmentRentals"`
+		}
+
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request payload"})
+		}
+
+		if req.FacilityID == "" || req.Date == "" || req.TimeSlot == "" || req.BookerName == "" || req.BookerID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Missing mandatory booking fields"})
+		}
+
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		// Verify facility exists
+		var facilityName string
+		facilityExists := false
+		for _, f := range store.Data.Facilities {
+			if f.ID == req.FacilityID {
+				facilityExists = true
+				facilityName = f.Name
+				break
+			}
+		}
+		if !facilityExists {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid facility specified"})
+		}
+
+		// Check for conflict (concurrency protection)
+		for _, b := range store.Data.Bookings {
+			if b.FacilityID == req.FacilityID && b.Date == req.Date && b.TimeSlot == req.TimeSlot && b.Status != "cancelled" {
+				return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+					"error": fmt.Sprintf("Time slot %s on %s is already reserved by %s (%s)", req.TimeSlot, req.Date, b.BookerName, b.BookerType),
+				})
+			}
+		}
+
+		// Generate random 4-digit check-in code
+		code := fmt.Sprintf("%04d", rand.Intn(9000)+1000)
+		bookingID := fmt.Sprintf("BK-%05d", (time.Now().Unix()%100000)+int64(rand.Intn(1000)))
+
+		newBooking := Booking{
+			ID:               bookingID,
+			FacilityID:       req.FacilityID,
+			FacilityName:     facilityName,
+			Date:             req.Date,
+			TimeSlot:         req.TimeSlot,
+			BookerType:       req.BookerType,
+			BookerName:       req.BookerName,
+			BookerID:         req.BookerID,
+			BookerEmail:      req.BookerEmail,
+			BookerPhone:      req.BookerPhone,
+			EquipmentRentals: req.EquipmentRentals,
+			Status:           "confirmed",
+			CheckInCode:      code,
+			CreatedAt:        time.Now(),
+		}
+
+		store.Data.Bookings = append([]Booking{newBooking}, store.Data.Bookings...)
+		_ = store.saveUnsafe()
+
+		return c.Status(fiber.StatusCreated).JSON(newBooking)
+	})
+
+	api.Delete("/bookings/:id", func(c *fiber.Ctx) error {
+		id := c.Params("id")
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		found := false
+		for i, b := range store.Data.Bookings {
+			if b.ID == id {
+				store.Data.Bookings[i].Status = "cancelled"
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Booking not found"})
+		}
+
+		_ = store.saveUnsafe()
+		return c.JSON(fiber.Map{"success": true, "message": "Booking cancelled successfully"})
+	})
+
+	// Achievements (Director of Sports Showcase - Read-only for legacy data preservation)
+	// Notice: Unauthenticated content write routes (POST /api/achievements, DELETE /api/achievements/:id)
+	// have been retired in Step 10M. Content authoring is strictly managed under /api/admin/content/drafts.
+	api.Get("/achievements", func(c *fiber.Ctx) error {
+		store.mu.RLock()
+		defer store.mu.RUnlock()
+		return c.JSON(store.Data.Achievements)
+	})
+
+	// Announcements (Read-only for legacy data preservation)
+	// Notice: Unauthenticated content write route (POST /api/announcements) has been retired in Step 10M.
+	api.Get("/announcements", func(c *fiber.Ctx) error {
+		store.mu.RLock()
+		defer store.mu.RUnlock()
+		return c.JSON(store.Data.Announcements)
+	})
+
+	// Stats endpoint for quick dashboard
+	api.Get("/stats", func(c *fiber.Ctx) error {
+		store.mu.RLock()
+		defer store.mu.RUnlock()
+
+		today := time.Now().Format("2006-01-02")
+		todayBookingsCount := 0
+		for _, b := range store.Data.Bookings {
+			if b.Date == today && b.Status != "cancelled" {
+				todayBookingsCount++
+			}
+		}
+
+		return c.JSON(fiber.Map{
+			"totalFacilities":   len(store.Data.Facilities),
+			"activeBookings":    len(store.Data.Bookings),
+			"todayBookings":     todayBookingsCount,
+			"achievementsCount": len(store.Data.Achievements),
+			"membershipsCount":  len(store.Data.Memberships),
+			"systemStatus":      "Optimal - All Courts Lit & Operational",
+		})
+	})
+
+	// Graceful shutdown handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("⚡ GIKI Sports Complex Go Backend listening on port :%s\n", cfg.Port)
+		if err := app.Listen(":" + cfg.Port); err != nil {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		log.Fatalf("[FATAL] Server listener error: %v", err)
+	case sig := <-sigChan:
+		log.Printf("Received signal '%s'. Initiating graceful shutdown...", sig)
+		padelCleaner.Stop()
+		if err := app.Shutdown(); err != nil {
+			log.Printf("[ERROR] Graceful shutdown error: %v", err)
+		}
+		log.Println("Server shutdown complete.")
+	}
+}
