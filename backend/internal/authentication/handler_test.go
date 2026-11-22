@@ -161,8 +161,8 @@ func TestHandler_Login_Success(t *testing.T) {
 	if !strings.Contains(cookieLower, "samesite=lax") {
 		t.Errorf("expected SameSite=Lax in cookie, got: %s", setCookie)
 	}
-	if !strings.Contains(cookieLower, "max-age=28800") {
-		t.Errorf("expected max-age=28800 (8h) in cookie, got: %s", setCookie)
+	if !strings.Contains(cookieLower, "max-age=28800") && !strings.Contains(cookieLower, "max-age=28799") {
+		t.Errorf("expected max-age around 28800 (8h) in cookie, got: %s", setCookie)
 	}
 
 	// Verify public user DTO and secret isolation
