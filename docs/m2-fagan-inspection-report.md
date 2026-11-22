@@ -5,7 +5,7 @@
 **Inspection Moderator & Defect Lead:** Arman Wali (2023129)  
 **Artifact Author:** Zohaib Malik (2023787)  
 **Reader / SQA Lead:** Abdullah Zia (2023050)  
-**External Independent Inspector:** Saad Farooq (2023302 — Team "Falcon", Paired Independent Inspector)  
+**External Independent Inspector:** Danish Ahmad (2023787 — Team "Campus Facility Booking System", Paired Independent Inspector)  
 **Target System:** GIKI Sports Complex Management System  
 **Repository:** https://github.com/ArmanWali/Giki-Sports-Complex  
 **Assessment Weight:** 20% of Total SE-431 Milestone Grade  
@@ -25,7 +25,7 @@ To eliminate self-review bias and satisfy the cross-team inspection mandate, the
 | **Moderator** | **Arman Wali** (2023129) | Planned inspection, scheduled meeting, verified entry criteria, mediated discussion, tracked defect log, and verified retesting during follow-up. |
 | **Author** | **Zohaib Malik** (2023787) | Provided design specifications, presented overview, answered structural queries, performed defect rework, and submitted fixes for verification. |
 | **Reader** | **Abdullah Zia** (2023050) | Paraphrased and led the team through the source code line-by-line during the formal meeting. |
-| **External Inspector** | **Saad Farooq** (2023302)<br>*(Paired Team "Falcon")* | **Independent Inspector** from external paired team; evaluated the code objectively against external specifications without insider bias. |
+| **External Inspector** | **Danish Ahmad** (2023787)<br>*(Paired Team "Campus Facility Booking System")* | **Independent Inspector** from external paired team; evaluated the code objectively against external specifications without insider bias. |
 
 ### 1.2 Inspection Logistics & Metrics
 
@@ -76,11 +76,11 @@ During the preparation and inspection meeting phases, **5 reproducible defects**
 
 | Defect ID | Artifact & Location | Severity | Defect Type | Defect Description & Observed Risk | Identified By |
 | :---: | :--- | :---: | :---: | :--- | :---: |
-| **DEF-01** | `padel/service.go`<br>Line 372 | **Critical** | Concurrency / Race Condition | **Pre-Lock vs Post-Lock Idempotency Window:** Idempotency lookup was only performed before acquiring the row lock on `LockSlotForBooking`. If two requests with the same key execute concurrently, both pass the pre-check before the lock is acquired, risking duplicate processing. | S. Farooq<br>*(External)* |
+| **DEF-01** | `padel/service.go`<br>Line 372 | **Critical** | Concurrency / Race Condition | **Pre-Lock vs Post-Lock Idempotency Window:** Idempotency lookup was only performed before acquiring the row lock on `LockSlotForBooking`. If two requests with the same key execute concurrently, both pass the pre-check before the lock is acquired, risking duplicate processing. | D. Ahmad<br>*(External)* |
 | **DEF-02** | `padel/service.go`<br>Line 435 | **Major** | Data Integrity / Timing | **Sub-Second Clock Skew on Hold Expiration:** `now.Before(slot.HoldExpiresAt)` compared un-truncated nanosecond timestamps against database `TIMESTAMPTZ` values, causing boundary hold rejections 2 milliseconds before true expiration. | A. Zia<br>*(Reader)* |
 | **DEF-03** | `padel/checkout.go`<br>Line 88 | **Major** | Algorithmic / Availability | **Unbounded Check-In Code Collision Loop:** `generateCheckInCode()` retried infinitely if collision occurred on the 6-character alphanumeric code, risking thread starvation under high slot volumes. | A. Wali<br>*(Moderator)*|
 | **DEF-04** | `wallet/service.go`<br>Line 124 | **Minor** | Defensive Programming | **Unchecked Deferred Rollback Error:** `defer tx.Rollback(ctx)` ignored error return without debug logging during database connection drop scenarios. | Z. Malik<br>*(Author)* |
-| **DEF-05** | `padel/unit_of_work.go`<br>Line 45 | **Minor** | Documentation / Maintainability | **Missing Abstract Factory Contract Godoc:** Interface `TransactionRepositoryFactory` lacked godoc annotations specifying that repositories spawned within the factory share the exact same underlying `pgx.Tx`. | S. Farooq<br>*(External)* |
+| **DEF-05** | `padel/unit_of_work.go`<br>Line 45 | **Minor** | Documentation / Maintainability | **Missing Abstract Factory Contract Godoc:** Interface `TransactionRepositoryFactory` lacked godoc annotations specifying that repositories spawned within the factory share the exact same underlying `pgx.Tx`. | D. Ahmad<br>*(External)* |
 
 ---
 
@@ -139,4 +139,4 @@ The inspection team confirms that the inspected artifacts have undergone rigorou
 | **Moderator** | Arman Wali | 2023129 | Team Banana | **APPROVED (Verified Closure)** |
 | **Author** | Zohaib Malik | 2023787 | Team Banana | **APPROVED (Rework Complete)** |
 | **Reader** | Abdullah Zia | 2023050 | Team Banana | **APPROVED (Checks Satisfied)** |
-| **External Inspector** | Saad Farooq | 2023302 | Team Falcon *(Paired)* | **APPROVED (Independent Sign-Off)** |
+| **External Inspector** | Danish Ahmad | 2023787 | Team Campus Facility Booking System *(Paired)* | **APPROVED (Independent Sign-Off)** |
