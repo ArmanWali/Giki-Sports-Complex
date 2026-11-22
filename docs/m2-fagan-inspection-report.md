@@ -5,7 +5,7 @@
 **Inspection Moderator & Defect Lead:** Arman Wali (2023129)  
 **Artifact Author:** Zohaib Malik (2023787)  
 **Reader / SQA Lead:** Abdullah Zia (2023050)  
-**External Independent Inspector:** Danish Ahmad (2023787 — Team "Campus Facility Booking System", Paired Independent Inspector)  
+**External Independent Inspector:** Danish Ahmad (2023172 — Team "Campus Facility Booking System", Paired Independent Inspector)  
 **Target System:** GIKI Sports Complex Management System  
 **Repository:** https://github.com/ArmanWali/Giki-Sports-Complex  
 **Assessment Weight:** 20% of Total SE-431 Milestone Grade  
@@ -25,7 +25,7 @@ To eliminate self-review bias and satisfy the cross-team inspection mandate, the
 | **Moderator** | **Arman Wali** (2023129) | Planned inspection, scheduled meeting, verified entry criteria, mediated discussion, tracked defect log, and verified retesting during follow-up. |
 | **Author** | **Zohaib Malik** (2023787) | Provided design specifications, presented overview, answered structural queries, performed defect rework, and submitted fixes for verification. |
 | **Reader** | **Abdullah Zia** (2023050) | Paraphrased and led the team through the source code line-by-line during the formal meeting. |
-| **External Inspector** | **Danish Ahmad** (2023787)<br>*(Paired Team "Campus Facility Booking System")* | **Independent Inspector** from external paired team; evaluated the code objectively against external specifications without insider bias. |
+| **External Inspector** | **Danish Ahmad** (2023172)<br>*(Paired Team "Campus Facility Booking System")* | **Independent Inspector** from external paired team; evaluated the code objectively against external specifications without insider bias. |
 
 ### 1.2 Inspection Logistics & Metrics
 
@@ -139,4 +139,4 @@ The inspection team confirms that the inspected artifacts have undergone rigorou
 | **Moderator** | Arman Wali | 2023129 | Team Banana | **APPROVED (Verified Closure)** |
 | **Author** | Zohaib Malik | 2023787 | Team Banana | **APPROVED (Rework Complete)** |
 | **Reader** | Abdullah Zia | 2023050 | Team Banana | **APPROVED (Checks Satisfied)** |
-| **External Inspector** | Danish Ahmad | 2023787 | Team Campus Facility Booking System *(Paired)* | **APPROVED (Independent Sign-Off)** |
+| **External Inspector** | Danish Ahmad | 2023172 | Team Campus Facility Booking System *(Paired)* | **APPROVED (Independent Sign-Off)** |
